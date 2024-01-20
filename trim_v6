@@ -1,0 +1,249 @@
+import regex as re
+import time
+import os
+import multiprocessing
+from functools import partial
+
+# Start the timer
+start_time = time.perf_counter()
+
+def trim(input_file, output_files, adapter_keys=None):
+    total_reads = 0
+    discarded_reads = 0
+    forward_trimmed_5prime = 0
+    forward_trimmed_13bp = 0
+    reverse_trimmed_19bp = 0
+    reverse_trimmed_13bp = 0
+    forward_tot_length = 0
+    reverse_tot_length = 0
+    bc01 = 0
+    bc02 = 0
+    bc03 = 0
+    bc04 = 0
+    bc05 = 0
+    bc06 = 0
+    bc07 = 0
+    bc08 = 0
+
+    bc, file_names = input_file
+
+    #dictionary of all the adapters
+
+    adapters = {
+        'universal_adapter_rc_19bp': '(TACACTCTTTCCCTACACGACGCTCTTCCGATCTGGG)',      #used for trimming the custom script demultiplexed reverse reads that are reverse complemented
+        'universal_adapter_rc_13bp': '(CTTTCCCTACACGACGCTCTTCCGATCTGGG)',
+        'universal_adapter_nrc_19bp': '(CCCAGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTA)',         #used for trimming cutadapt demultiplexed reverse reads
+        'universal_adapter_nrc_13bp': '(CCCAGATCGGAAGAGCGTCGTGTAGGGAAAG)',
+        'forward_5prime': '[GN]*',
+        'forward_3prime_13bp_bc01': '(G[TAGCN]{5,6}){e<=1}TG(AACT)',
+        'forward_3prime_13bp_bc02': '(G[TAGCN]{5,6}){e<=1}TG(CGAC)',
+        'forward_3prime_13bp_bc03': '(G[TAGCN]{5,6}){e<=1}TG(GCCA)',
+        'forward_3prime_13bp_bc04': '(G[TAGCN]{5,6}){e<=1}TG(AGTA)',
+        'forward_3prime_13bp_bc05': '(G[TAGCN]{5,6}){e<=1}TG(CTTG)',
+        'forward_3prime_13bp_bc06': '(G[TAGCN]{5,6}){e<=1}TG(TCGT)',
+        'forward_3prime_13bp_bc07': '(G[TAGCN]{5,6}){e<=1}TG(GTAT)',
+        'forward_3prime_13bp_bc08': '(G[TAGCN]{5,6}){e<=1}TG(TATC)',
+        }
+
+    # Initialize compiled adapters with default empty strings
+    compiled_adapters = {key: re.compile('') for key in adapters}
+
+    if adapter_keys:
+        if isinstance(adapter_keys, str):
+            adapter_keys = [adapter_keys]  # Convert to list for uniform processing
+
+        for key in adapter_keys:
+            for adapter in adapters.keys():
+                if key in adapter:
+                    compiled_adapters[adapter] = re.compile(adapters[adapter])
+
+
+    with open(file_names['forward'], 'r') as forward_file, open(file_names['reverse'], 'r') as reverse_file:
+        buffer_size = 25000  # Number of records to accumulate before writing
+        forward_buffer = []
+        reverse_buffer = []
+
+        while True:
+            forward_lines = [next(forward_file, None) for _ in range(4)]
+            reverse_lines = [next(reverse_file, None) for _ in range(4)]
+
+            if None in forward_lines or None in reverse_lines:
+                break
+
+            total_reads += 1
+            forward_seq = forward_lines[1].strip()
+            reverse_seq = reverse_lines[1].strip()
+            forward_trimmed = False
+
+            for adapter_bc, pattern in ((k, v) for k, v in compiled_adapters.items() if 'forward_3prime_13bp' in k):
+                if pattern.pattern == '':
+                    forward_lines[1] = forward_lines[1][:-3] + '\n'
+                    forward_lines[3] = forward_lines[3][:-3] + '\n'
+                    forward_trimmed = True
+                    break
+
+                else:
+                    match_forward = pattern.search(forward_seq)
+                    if match_forward:
+                        start_index = match_forward.start()
+                        forward_lines[1] = forward_lines[1][:start_index] + '\n'
+                        forward_lines[3] = forward_lines[3][:start_index] + '\n'
+
+                        if adapter_bc == 'forward_3prime_13bp_bc01':
+                            bc01 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc02':
+                            bc02 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc03':
+                            bc03 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc04':
+                            bc04 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc05':
+                            bc05 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc06':
+                            bc06 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc07':
+                            bc07 += 1
+                        elif adapter_bc == 'forward_3prime_13bp_bc08':
+                            bc08 += 1
+
+                        if start_index != 0:
+                            forward_trimmed_13bp += 1
+                            forward_trimmed = True
+                        break
+
+            if not forward_trimmed:
+                forward_lines[1] = forward_lines[1][:-3] + '\n'
+                forward_lines[3] = forward_lines[3][:-3] + '\n'
+                forward_trimmed = True
+
+            trimmed_5prime = False
+            adapter_object = compiled_adapters.get('forward_5prime')
+
+            if adapter_object.pattern == '':
+                forward_lines[1] = forward_lines[1]
+                forward_lines[3] = forward_lines[3]
+
+            else:
+                match_forward_5prime = compiled_adapters.get('forward_5prime').search(forward_seq)
+                if match_forward_5prime:
+                    end_index = match_forward_5prime.end()
+                    forward_lines[1] = forward_lines[1][end_index:]
+                    forward_lines[3] = forward_lines[3][end_index:]
+                    if end_index != 0 :
+                        forward_trimmed_5prime += 1
+                        trimmed_5prime = True
+
+            reverse_seq = reverse_lines[1].strip()
+            reverse_trimmed_rc = False
+
+            adapter_object = compiled_adapters.get('universal_adapter_rc_19bp')
+            if adapter_object.pattern == '':  #check if the original pattern of the compiled pattern is an empty string
+                reverse_lines[1] = reverse_lines[1]
+                reverse_lines[3] = reverse_lines[3]
+                reverse_trimmed_rc = True
+
+            else:
+                match_reverse = compiled_adapters.get('universal_adapter_rc_19bp').search(reverse_seq)
+                if match_reverse:
+                    end_index = match_reverse.end()
+                    reverse_lines[1] = reverse_lines[1][end_index:]
+                    reverse_lines[3] = reverse_lines[3][end_index:]
+                    if end_index != 0:
+                        reverse_trimmed_19bp += 1
+                        reverse_trimmed_rc = True
+
+            if not reverse_trimmed_rc:
+                match_reverse = compiled_adapters.get('universal_adapter_rc_13bp').search(reverse_seq)
+                if match_reverse:
+                    end_index = match_reverse.end()
+                    reverse_lines[1] = reverse_lines[1][end_index:]
+                    reverse_lines[3] = reverse_lines[3][end_index:]
+                    if end_index != 0:
+                        reverse_trimmed_13bp +=1
+                        reverse_trimmed_rc = True
+
+            reverse_trimmed_nrc = False
+            adapter_object = compiled_adapters.get('universal_adapter_nrc_19bp')
+            if adapter_object.pattern == '':  #check if the original pattern of the compiled pattern is an empty string
+                reverse_lines[1] = reverse_lines[1]
+                reverse_lines[3] = reverse_lines[3]
+                reverse_trimmed_nrc = True
+
+            else:
+                match_reverse = compiled_adapters.get('universal_adapter_nrc_19bp').search(reverse_seq)
+                if match_reverse:
+                    start_index = match_reverse.start()
+                    reverse_lines[1] = reverse_lines[1][:start_index] + '\n'
+                    reverse_lines[3] = reverse_lines[3][:start_index] + '\n'
+                    if start_index != 0:
+                        reverse_trimmed_19bp +=1
+                        reverse_trimmed_nrc = True
+
+            if not reverse_trimmed_nrc:
+                match_reverse = compiled_adapters.get('universal_adapter_nrc_13bp').search(reverse_seq)
+                if match_reverse:
+                    start_index = match_reverse.start()
+                    reverse_lines[1] = reverse_lines[1][:start_index] + '\n'
+                    reverse_lines[3] = reverse_lines[3][:start_index] + '\n'
+                    if start_index != 0:
+                        reverse_trimmed_13bp +=1
+                        reverse_trimmed_nrc = True
+
+            if len(forward_lines[1].strip()) < 12 and len(reverse_lines[1].strip()) < 12:
+                discarded_reads += 1
+                continue
+
+            forward_tot_length += len(forward_lines[1])
+            reverse_tot_length += len(reverse_lines[1])
+
+            forward_buffer.extend(forward_lines)
+            reverse_buffer.extend(reverse_lines)
+
+            if len(forward_buffer) >= buffer_size * 4:
+                with open(output_files[bc]['forward'], 'a') as forward_out:
+                    forward_out.writelines(forward_buffer)
+                    forward_buffer = []
+
+                with open(output_files[bc]['reverse'], 'a') as reverse_out:
+                    reverse_out.writelines(reverse_buffer)
+                    reverse_buffer = []
+        if forward_buffer:
+            with open(output_files[bc]['forward'], 'a') as forward_out:
+                forward_out.writelines(forward_buffer)
+
+        if reverse_buffer:
+            with open(output_files[bc]['reverse'], 'a') as reverse_out:
+                reverse_out.writelines(reverse_buffer)
+
+    # Calculate and print percentages
+    forward_average_length = forward_tot_length / (total_reads-discarded_reads)
+    reverse_average_length = reverse_tot_length / (total_reads-discarded_reads)
+    percent_forward_trimmed_5prime = (forward_trimmed_5prime / total_reads) * 100 if total_reads > 0 else 0
+    percent_forward_trimmed_13bp = (forward_trimmed_13bp / total_reads) * 100 if total_reads > 0 else 0
+    percent_reverse_trimmed_19bp = (reverse_trimmed_19bp / total_reads) * 100 if total_reads > 0 else 0
+    percent_reverse_trimmed_13bp = (reverse_trimmed_13bp / total_reads) * 100 if total_reads > 0 else 0
+    percent_discarded = (discarded_reads / total_reads) * 100 if total_reads > 0 else 0
+
+    print(f"{bc} forward and reverse insert average length: {forward_average_length}, {reverse_average_length}")
+    print(f"{bc} percentage of forward reads trimmed by 5 prime adapter, and 13 bp adapters: {percent_forward_trimmed_5prime}%, {percent_forward_trimmed_13bp}%")
+    print(f"{bc} percentage of reverse reads trimmed by 19 bp, 13bp adapters: {percent_reverse_trimmed_19bp}%, {percent_reverse_trimmed_13bp}%")
+    print(f"{bc} percentage discarded (shorter than 12 bp): {percent_discarded}%")
+    print(bc01/total_reads, bc02/total_reads, bc03/total_reads, bc04/total_reads, bc05/total_reads, bc06/total_reads, bc07/total_reads, bc08/total_reads)
+
+
+# Specify the input files and output files for each barcode
+input_files = {(bc,BC): {'forward': f'{bc}_mm2305-06-A431-{BC}_R1.fastq', 'reverse': f'{bc}_mm2305-06-A431-{BC}_R2.fastq'} for bc in ['bc01', 'bc02', 'bc03', 'bc04', 'bc05', 'bc06', 'bc07', 'bc08'] for BC in ['BC18', 'BC22']}
+output_files = {(bc,BC): {'forward': f'{bc}_mm2305-06-A431-{BC}_R1.trimmed.fastq', 'reverse': f'{bc}_mm2305-06-A431-{BC}_R2.trimmed.fastq'} for bc in ['bc01', 'bc02', 'bc03', 'bc04', 'bc05', 'bc06', 'bc07', 'bc08'] for BC in ['BC18', 'BC22']}
+
+os.chdir ('/gpfs/bwfor/work/ws/hd_uv268-shsy5y/YZ588/cutCusTrim')
+#create a function with the output_files argument prefilled because the pool.map function can only take in one argument from the trim function
+trim_partial = partial(trim, output_files=output_files, adapter_keys=['universal_adapter_nrc','forward_3prime', 'forward_5prime'])
+
+# Create a pool of worker processes
+with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+    # Map the function to the arguments
+    results = pool.map(trim_partial, input_files.items())
+
+end_time = time.perf_counter()
+elapsed_time = end_time - start_time
+print(f"The code took {elapsed_time} seconds to execute.")            

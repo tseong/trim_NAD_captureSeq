@@ -179,5 +179,3 @@ with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
 print(f"The code took {elapsed_time} seconds to execute.")
-
-            forward_lines = [next(forward_file, None) for _ in range(4)]
