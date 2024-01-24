@@ -124,10 +124,10 @@ def trim(input_file, output_files, adapter_keys=None):
                 forward_lines[3] = forward_lines[3]
 
             else:
-                match_forward_5prime = compiled_adapters.get('forward_5prime').search(forward_seq)
+                match_forward_5prime = compiled_adapters.get('forward_5prime').search(forward_lines[1])
                 if match_forward_5prime:
                     end_index = match_forward_5prime.end()
-                    forward_lines[1] = forward_lines[1][end_index:]
+                    forward_lines[1] = forward_lines[1][end_index:] 
                     forward_lines[3] = forward_lines[3][end_index:]
                     if end_index != 0 :
                         forward_trimmed_5prime += 1
